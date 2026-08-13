@@ -1,0 +1,4 @@
+John Doe
+Senior AI Engineer
+5 years of experience
+Skills: Python, PyTorch, Docker
