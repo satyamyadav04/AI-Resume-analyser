@@ -1,133 +1,70 @@
-"""
-backend/database/db.py — SQLite Connection Manager & Schema Initializer
-========================================================================
-Provides thread-safe SQLite connections with WAL mode enabled.
-Automatically creates all ATS tables on first run.
-"""
-
 from __future__ import annotations
 
 import logging
 import os
-import sqlite3
-import threading
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Generator
+
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Database path — stored at project root
-# ---------------------------------------------------------------------------
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_DB_PATH = str(_PROJECT_ROOT / "ats.db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Thread-local storage for connections
-_local = threading.local()
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is not set")
 
 
-def _get_connection() -> sqlite3.Connection:
-    """Return (or create) a thread-local SQLite connection."""
-    if not hasattr(_local, "conn") or _local.conn is None:
-        _local.conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-        _local.conn.row_factory = sqlite3.Row
-        _local.conn.execute("PRAGMA journal_mode=WAL")
-        _local.conn.execute("PRAGMA foreign_keys=ON")
-        _local.conn.execute("PRAGMA synchronous=NORMAL")
-    return _local.conn
+def _get_connection():
+    """Create a PostgreSQL database connection."""
+    return psycopg2.connect(DATABASE_URL)
 
 
 @contextmanager
-def get_db() -> Generator[sqlite3.Connection, None, None]:
-    """Context manager that yields a SQLite connection.
-
-    Commits on success, rolls back on exception.
-    """
+def get_db() -> Generator:
+    """Context manager for PostgreSQL connections."""
     conn = _get_connection()
+
     try:
         yield conn
         conn.commit()
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
 
 
 def init_db() -> None:
-    """Create all tables if they don't exist, and seed storage directories."""
+    """Create all database tables and indexes."""
     from backend.database.models import ALL_DDL
 
     conn = _get_connection()
+
     try:
-        for ddl in ALL_DDL:
-            conn.execute(ddl)
-        _normalize_active_jds(conn)
-        conn.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_jd_one_active_per_company
-            ON job_descriptions(company_id)
-            WHERE is_active = 1
-            """
-        )
+        with conn.cursor() as cursor:
+            for ddl in ALL_DDL:
+                cursor.execute(ddl)
+
         conn.commit()
-        logger.info("Database initialized at: %s", _DB_PATH)
+
+        logger.info("PostgreSQL database initialized successfully.")
+
     except Exception as exc:
         conn.rollback()
-        logger.exception("Failed to initialize database: %s", exc)
+        logger.exception("Failed to initialize PostgreSQL database: %s", exc)
         raise
 
-    # Create storage directories
-    storage_dirs = [
-        _PROJECT_ROOT / "storage" / "resumes",
-        _PROJECT_ROOT / "storage" / "job_descriptions",
-        _PROJECT_ROOT / "storage" / "reports",
-        _PROJECT_ROOT / "storage" / "cache",
-    ]
-    for d in storage_dirs:
-        d.mkdir(parents=True, exist_ok=True)
-    logger.info("Storage directories initialized.")
+    finally:
+        conn.close()
 
 
 def get_db_path() -> str:
-    """Return the absolute path to the SQLite database file."""
-    return _DB_PATH
+    """Return database URL."""
+    return DATABASE_URL
 
 
-def get_project_root() -> Path:
-    """Return the project root Path."""
-    return _PROJECT_ROOT
-
-
-def _normalize_active_jds(conn: sqlite3.Connection) -> None:
-    """Keep only one active JD per company before enforcing the unique index."""
-    duplicates = conn.execute(
-        """
-        SELECT company_id
-        FROM job_descriptions
-        WHERE is_active = 1
-        GROUP BY company_id
-        HAVING COUNT(*) > 1
-        """
-    ).fetchall()
-
-    for row in duplicates:
-        company_id = row[0]
-        active_rows = conn.execute(
-            """
-            SELECT id
-            FROM job_descriptions
-            WHERE company_id = ? AND is_active = 1
-            ORDER BY updated_at DESC, created_at DESC, id DESC
-            """,
-            (company_id,),
-        ).fetchall()
-        keep_id = active_rows[0][0]
-        conn.execute(
-            """
-            UPDATE job_descriptions
-            SET is_active = 0,
-                updated_at = datetime('now')
-            WHERE company_id = ? AND is_active = 1 AND id != ?
-            """,
-            (company_id, keep_id),
-        )
+def get_project_root():
+    from pathlib import Path
+    return Path(__file__).resolve().parents[2]
