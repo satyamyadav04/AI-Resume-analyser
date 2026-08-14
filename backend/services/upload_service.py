@@ -95,7 +95,13 @@ def process_resume(
     try:
         active_jd = jd_service.get_upload_target_jd(company_id, jd_id)
         active_jd_id = int(active_jd["id"])
-        effective_jd_text = jd_text.strip() or jd_service.get_active_jd_text(company_id)
+        # The selected upload target is always the active JD.  Build its text
+        # from that record so semantic matching and skill-gap analysis use the
+        # exact same role, even if the UI did not pass a JD string.
+        effective_jd_text = jd_text.strip() or " ".join(
+            str(active_jd.get(field, "") or "")
+            for field in ("title", "description", "requirements")
+        ).strip()
 
         # ── 1. Compute file hash for duplicate detection ──────────────────
         file_hash = hashlib.md5(file_bytes).hexdigest()
@@ -107,7 +113,11 @@ def process_resume(
         # ── 2. Save file to storage/ ──────────────────────────────────────
         storage_dir = get_project_root() / "storage" / "resumes" / str(company_id) / str(active_jd_id)
         storage_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = _safe_filename(filename)
+        # Do not overwrite an earlier upload when two different resumes share
+        # a filename (very common with files named "resume.pdf").  The hash
+        # is also used for duplicate detection above, so this is stable and
+        # safe for deployment storage.
+        safe_name = f"{file_hash[:12]}_{_safe_filename(filename)}"
         file_path = storage_dir / safe_name
         file_path.write_bytes(file_bytes)
 
@@ -150,10 +160,16 @@ def process_resume(
         features["cosine_similarity"] = semantic_sim
 
         # ── 7. Compute hybrid score ───────────────────────────────────────
+        jd_skill_terms = _extract_jd_skill_terms(effective_jd_text)
+        jd_skill_match = _candidate_jd_skill_match(candidate_dict, jd_skill_terms)
+        # If a JD has no recognised skill terms, preserve the broader model
+        # signal instead of treating every candidate as a zero skill match.
+        skill_match = jd_skill_match if jd_skill_terms else float(features.get("skill_match", 0.0))
+
         final_score = engine.compute_hybrid_score(
             semantic_similarity=semantic_sim,
             candidate=candidate_dict,
-            skill_match=float(features.get("skill_match", 0.0)),
+            skill_match=skill_match,
             experience_years=float(features.get("experience_years", 0.0)),
         )
 
@@ -179,7 +195,12 @@ def process_resume(
             (s.get("name", "") or "").lower()
             for s in (candidate_dict.get("skills", []) or [])
         )
-        missing_skills = sorted(s for s in _RELEVANT_SKILLS if s not in candidate_skills_lower)[:10]
+        required_skills = jd_skill_terms or _RELEVANT_SKILLS
+        missing_skills = sorted(
+            skill for skill in required_skills
+            if not any(skill == candidate_skill or skill in candidate_skill or candidate_skill in skill
+                       for candidate_skill in candidate_skills_lower)
+        )[:10]
 
         # Strengths and weaknesses
         strengths, weaknesses = _compute_strengths_weaknesses(features, status)
@@ -212,7 +233,7 @@ def process_resume(
             jd_id=active_jd_id,
             scores={
                 "overall_score": final_score,
-                "skill_match": float(features.get("skill_match", 0.0)),
+                "skill_match": skill_match,
                 "semantic_match": semantic_sim,
                 "experience_score": exp_score,
                 "education_score": edu_score,
@@ -357,6 +378,28 @@ def _compute_education_score(candidate_dict: dict) -> float:
     if any(k in edu_str for k in ["bachelor", "b.tech", "btech", "b.e"]):
         return 0.70
     return 0.5
+
+
+def _extract_jd_skill_terms(jd_text: str) -> set[str]:
+    """Return supported technical skills explicitly required by the active JD."""
+    normalized = jd_text.lower()
+    return {skill for skill in _RELEVANT_SKILLS if skill in normalized}
+
+
+def _candidate_jd_skill_match(candidate_dict: dict, jd_skill_terms: set[str]) -> float:
+    """Compute candidate skill overlap against the active JD, not a fixed role."""
+    if not jd_skill_terms:
+        return 0.0
+    candidate_skills = {
+        str(skill.get("name", "")).strip().lower()
+        for skill in candidate_dict.get("skills", []) or []
+        if isinstance(skill, dict) and skill.get("name")
+    }
+    matched = sum(
+        1 for required in jd_skill_terms
+        if any(required == skill or required in skill or skill in required for skill in candidate_skills)
+    )
+    return matched / len(jd_skill_terms)
 
 
 def _compute_project_score(candidate_dict: dict) -> float:

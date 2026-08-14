@@ -224,20 +224,16 @@ def _find_dataset_jd(company_id: int) -> Optional[dict[str, Any]]:
 
 def _candidate_exists(company_id: int, jd_id: int, candidate_uid: str) -> bool:
     with get_db() as db:
-        # Keep this query on the same PostgreSQL cursor API used by every
-        # repository.  Calling ``db.execute`` worked only with the old SQLite
-        # connection and caused dataset imports to fail in deployment.
-        with db.cursor() as cur:
-            cur.execute(
-                """
-                SELECT 1
-                FROM candidates
-                WHERE company_id = %s AND jd_id = %s AND candidate_uid = %s
-                LIMIT 1
-                """,
-                (company_id, jd_id, candidate_uid),
-            )
-            return cur.fetchone() is not None
+        row = db.execute(
+            """
+            SELECT 1
+            FROM candidates
+            WHERE company_id = %s AND jd_id = %s AND candidate_uid = %s
+            LIMIT 1
+            """,
+            (company_id, jd_id, candidate_uid),
+        ).fetchone()
+        return row is not None
 
 
 def _map_dataset_candidate(raw: dict[str, Any]) -> dict[str, Any]:
