@@ -1,5 +1,11 @@
 """
 backend/services/dataset_service.py - Import challenge dataset into the ATS.
+
+Dataset candidates are scored through the same local ML pipeline used by
+uploaded resumes: SentenceTransformer embeddings + cosine similarity +
+hybrid scoring.  The repository contains a 50-record sample dataset, so the
+application remains deployable even when the larger JSONL dataset is not
+present in the deployment image.
 """
 from __future__ import annotations
 
@@ -9,8 +15,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from backend.database.db import get_db, get_project_root
+from backend.embeddings import EmbeddingPipeline, _RELEVANT_SKILLS
 from backend.repositories import analysis_repo, candidate_repo, jd_repo
+from backend.scoring import HeuristicFilter, ScoringEngine
 from backend.services import jd_service
+from backend.utils import ExplanationEngine
 
 DATASET_TITLE = "India Data and AI Challenge Role"
 DATASET_ROOT = (
@@ -21,7 +30,34 @@ DATASET_ROOT = (
     / "India_runs_data_and_ai_challenge"
 )
 DATASET_CANDIDATES_PATH = DATASET_ROOT / "candidates.jsonl"
+# This checked-in file is available in the deployed repository.
+DATASET_SAMPLE_PATH = DATASET_ROOT / "sample_candidates.json"
 DATASET_JD_PATH = DATASET_ROOT / "job_description.docx"
+
+_embedding_pipeline: Optional[EmbeddingPipeline] = None
+_scoring_engine: Optional[ScoringEngine] = None
+_explainer: Optional[ExplanationEngine] = None
+
+
+def _get_ml_pipeline() -> EmbeddingPipeline:
+    global _embedding_pipeline
+    if _embedding_pipeline is None:
+        _embedding_pipeline = EmbeddingPipeline()
+    return _embedding_pipeline
+
+
+def _get_scoring_engine() -> ScoringEngine:
+    global _scoring_engine
+    if _scoring_engine is None:
+        _scoring_engine = ScoringEngine(embedding_pipeline=_get_ml_pipeline())
+    return _scoring_engine
+
+
+def _get_explainer() -> ExplanationEngine:
+    global _explainer
+    if _explainer is None:
+        _explainer = ExplanationEngine()
+    return _explainer
 
 
 def ensure_dataset_job_description(company_id: int, user_id: int) -> dict[str, Any]:
@@ -66,6 +102,35 @@ def load_dataset_jd_text() -> str:
     )
 
 
+def _resolve_dataset_path(dataset_path: Optional[Path]) -> Path:
+    """Prefer the full JSONL dataset, then the checked-in sample dataset."""
+    if dataset_path is not None:
+        return dataset_path
+    if DATASET_CANDIDATES_PATH.exists():
+        return DATASET_CANDIDATES_PATH
+    if DATASET_SAMPLE_PATH.exists():
+        return DATASET_SAMPLE_PATH
+    raise FileNotFoundError(
+        "Dataset candidates file not found. Expected candidates.jsonl or sample_candidates.json."
+    )
+
+
+def _iter_dataset_records(path: Path):
+    """Yield records from JSONL or the checked-in JSON sample."""
+    if path.suffix.lower() == ".jsonl":
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    yield json.loads(line)
+        return
+
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, list):
+        raise ValueError(f"Expected a JSON array in dataset file: {path}")
+    yield from payload
+
+
 def import_challenge_candidates(
     company_id: int,
     jd_id: int,
@@ -73,62 +138,80 @@ def import_challenge_candidates(
     limit: int = 50,
     dataset_path: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Import candidates from the challenge JSONL into the active ATS database."""
-    path = dataset_path or DATASET_CANDIDATES_PATH
-    if not path.exists():
-        raise FileNotFoundError(f"Dataset candidates file not found: {path}")
+    """Import and ML-score dataset candidates against the active JD."""
+    path = _resolve_dataset_path(dataset_path)
 
     jd = jd_repo.get_jd(jd_id)
     if not jd or int(jd["company_id"]) != int(company_id):
         raise ValueError("A valid active JD is required before importing dataset candidates.")
 
-    jd_text = " ".join([jd.get("title", ""), jd.get("description", ""), jd.get("requirements", "")])
-    jd_terms = _important_terms(jd_text)
+    jd_text = " ".join(
+        [jd.get("title", ""), jd.get("description", ""), jd.get("requirements", "")]
+    ).strip()
+    pipeline = _get_ml_pipeline()
+    engine = _get_scoring_engine()
+    explainer = _get_explainer()
+    jd_vector = pipeline._embed(jd_text) if jd_text else pipeline.jd_vector
+    jd_skill_terms = _jd_skill_terms(jd_text)
 
     imported = 0
     skipped = 0
     last_candidate_id: Optional[int] = None
 
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if imported >= limit:
-                break
-            if not line.strip():
-                continue
+    for raw in _iter_dataset_records(path):
+        if imported >= limit:
+            break
 
-            raw = json.loads(line)
-            candidate_uid = str(raw.get("candidate_id", "")).strip()
-            if not candidate_uid or _candidate_exists(company_id, jd_id, candidate_uid):
-                skipped += 1
-                continue
+        candidate_uid = str(raw.get("candidate_id", "")).strip()
+        if not candidate_uid or _candidate_exists(company_id, jd_id, candidate_uid):
+            skipped += 1
+            continue
 
-            candidate = _map_dataset_candidate(raw)
-            candidate_db_id = candidate_repo.save_candidate(
-                company_id=company_id,
-                jd_id=jd_id,
-                upload_id=None,
-                candidate_dict=candidate,
-            )
-            analysis_repo.save_analysis(
-                candidate_db_id=candidate_db_id,
-                jd_id=jd_id,
-                scores=_score_dataset_candidate(raw, candidate, jd_terms, imported + 1),
-            )
-            candidate_repo.add_timeline_event(
-                candidate_db_id,
-                "Dataset Imported",
-                f"Imported from challenge dataset record {candidate_uid}.",
-                user_id,
-            )
-            jd_repo.increment_resume_count(jd_id)
-            imported += 1
-            last_candidate_id = candidate_db_id
+        candidate = _map_dataset_candidate(raw)
+        scores = _score_dataset_candidate(
+            raw=raw,
+            candidate=candidate,
+            pipeline=pipeline,
+            engine=engine,
+            explainer=explainer,
+            jd_vector=jd_vector,
+            jd_skill_terms=jd_skill_terms,
+        )
+
+        candidate_db_id = candidate_repo.save_candidate(
+            company_id=company_id,
+            jd_id=jd_id,
+            upload_id=None,
+            candidate_dict=candidate,
+        )
+        analysis_repo.save_analysis(
+            candidate_db_id=candidate_db_id,
+            jd_id=jd_id,
+            scores=scores,
+        )
+        candidate_repo.add_timeline_event(
+            candidate_db_id,
+            "Dataset Imported",
+            f"Imported and ML-scored from {path.name}: {candidate_uid}.",
+            user_id,
+        )
+        candidate_repo.add_timeline_event(
+            candidate_db_id,
+            "AI Analysis Completed",
+            f"Semantic match: {scores['semantic_match']:.1%} | Overall: {scores['overall_score']:.1%}",
+            user_id,
+        )
+        jd_repo.increment_resume_count(jd_id)
+        imported += 1
+        last_candidate_id = candidate_db_id
 
     return {
         "imported": imported,
         "skipped": skipped,
         "last_candidate_id": last_candidate_id,
         "dataset_path": str(path),
+        "ml_enabled": pipeline.use_transformer,
+        "embedding_model": pipeline.model_name if pipeline.use_transformer else "TF-IDF fallback",
     }
 
 
@@ -141,16 +224,20 @@ def _find_dataset_jd(company_id: int) -> Optional[dict[str, Any]]:
 
 def _candidate_exists(company_id: int, jd_id: int, candidate_uid: str) -> bool:
     with get_db() as db:
-        row = db.execute(
-            """
-            SELECT 1
-            FROM candidates
-            WHERE company_id = ? AND jd_id = ? AND candidate_uid = ?
-            LIMIT 1
-            """,
-            (company_id, jd_id, candidate_uid),
-        ).fetchone()
-        return row is not None
+        # Keep this query on the same PostgreSQL cursor API used by every
+        # repository.  Calling ``db.execute`` worked only with the old SQLite
+        # connection and caused dataset imports to fail in deployment.
+        with db.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM candidates
+                WHERE company_id = %s AND jd_id = %s AND candidate_uid = %s
+                LIMIT 1
+                """,
+                (company_id, jd_id, candidate_uid),
+            )
+            return cur.fetchone() is not None
 
 
 def _map_dataset_candidate(raw: dict[str, Any]) -> dict[str, Any]:
@@ -191,114 +278,121 @@ def _map_education(row: dict[str, Any]) -> dict[str, Any]:
 def _score_dataset_candidate(
     raw: dict[str, Any],
     candidate: dict[str, Any],
-    jd_terms: set[str],
-    rank_position: int,
+    pipeline: EmbeddingPipeline,
+    engine: ScoringEngine,
+    explainer: ExplanationEngine,
+    jd_vector: Any,
+    jd_skill_terms: set[str],
 ) -> dict[str, Any]:
-    skills = {str(s.get("name", "")).strip().lower() for s in candidate.get("skills", []) if isinstance(s, dict)}
-    skill_match = _ratio(len(skills & jd_terms), max(len(jd_terms), 1))
+    features = pipeline.extract_features(candidate)
+    semantic_match = float(
+        pipeline.compute_cosine_similarity(features["embedding"], jd_vector)
+    )
+    skill_match = _candidate_jd_skill_match(candidate, jd_skill_terms)
+    years = float(candidate.get("experience_years") or 0.0)
 
-    profile = raw.get("profile", {}) or {}
-    summary_terms = _important_terms(
-        " ".join(
-            [
-                profile.get("headline", ""),
-                profile.get("summary", ""),
-                " ".join(exp.get("description", "") for exp in raw.get("career_history", []) or []),
-            ]
+    final_score = float(
+        engine.compute_hybrid_score(
+            semantic_similarity=semantic_match,
+            candidate=candidate,
+            skill_match=skill_match,
+            experience_years=years,
         )
     )
-    semantic_match = _ratio(len(summary_terms & jd_terms), max(len(jd_terms), 1))
 
-    years = float(candidate.get("experience_years") or 0.0)
-    experience_score = min(years / 8.0, 1.0)
-    signals = raw.get("redrob_signals", {}) or {}
-    availability = _availability_score(signals)
-    education_score = _education_score(raw.get("education", []) or [])
-    project_score = 0.35 if any(term in summary_terms for term in {"rag", "ml", "machine", "ai", "model"}) else 0.2
+    if HeuristicFilter.is_honeypot(candidate):
+        status = "HONEYPOT"
+    elif HeuristicFilter.is_title_trap(candidate):
+        status = "TITLE_TRAP"
+    else:
+        status = "CLEAN"
 
-    overall = (
-        (0.38 * skill_match)
-        + (0.27 * semantic_match)
-        + (0.18 * experience_score)
-        + (0.10 * availability)
-        + (0.07 * education_score)
+    candidate_for_explanation = dict(candidate)
+    candidate_for_explanation["score"] = final_score
+    reasoning = explainer.generate_reasoning(candidate_for_explanation, semantic_match)
+
+    exp_score = min(years / 10.0, 1.0)
+    edu_score = _education_score(candidate.get("education", []) or [])
+    proj_score = _project_score(raw, candidate)
+    candidate_skills = {
+        str(s.get("name", "")).strip().lower()
+        for s in candidate.get("skills", [])
+        if isinstance(s, dict)
+    }
+    missing_skills = sorted(jd_skill_terms - candidate_skills)[:10]
+
+    recommendation = _recommendation(final_score)
+    ai_summary = (
+        f"{candidate.get('name', 'This candidate')} was evaluated using the local "
+        f"Sentence Transformer embedding pipeline. Semantic JD match is {semantic_match:.0%}, "
+        f"skill match is {skill_match:.0%}, and the final hybrid fit score is {final_score:.0%}."
     )
-    overall = max(0.05, min(overall, 0.98))
-    recommendation = _recommendation(overall)
 
-    missing_skills = sorted(jd_terms - skills)[:10]
-    strengths = _strengths(skills, years, signals)
-    weaknesses = _weaknesses(missing_skills, signals)
+    strengths = []
+    if skill_match >= 0.5:
+        strengths.append("Strong overlap with the active JD skills")
+    if semantic_match >= 0.65:
+        strengths.append("Strong semantic alignment with the role")
+    if years >= 5:
+        strengths.append(f"{years:.1f} years of professional experience")
+    signals = raw.get("redrob_signals", {}) or {}
+    if signals.get("open_to_work_flag"):
+        strengths.append("Candidate is open to work")
+
+    weaknesses = []
+    if missing_skills:
+        weaknesses.append("Missing: " + ", ".join(missing_skills[:5]))
+    if semantic_match < 0.4:
+        weaknesses.append("Low semantic alignment with the active JD")
 
     return {
-        "overall_score": overall,
+        "overall_score": final_score,
         "skill_match": skill_match,
         "semantic_match": semantic_match,
-        "experience_score": experience_score,
-        "education_score": education_score,
-        "project_score": project_score,
-        "ai_summary": _summary(candidate, overall, skill_match, semantic_match),
+        "experience_score": exp_score,
+        "education_score": edu_score,
+        "project_score": proj_score,
+        "ai_summary": ai_summary,
         "recommendation": recommendation,
-        "reasoning": (
-            f"Dataset candidate scored with skill overlap {skill_match:.0%}, "
-            f"JD text overlap {semantic_match:.0%}, and {years:.1f} years of experience."
-        ),
-        "strengths": strengths,
-        "weaknesses": weaknesses,
+        "reasoning": reasoning,
+        "strengths": strengths[:5],
+        "weaknesses": weaknesses[:5],
         "missing_skills": missing_skills,
-        "status": "CLEAN",
-        "rank_position": rank_position,
+        "status": status,
+        "rank_position": 0,
     }
+
+
+def _jd_skill_terms(jd_text: str) -> set[str]:
+    """Extract relevant multi-word/single-word skills actually present in the JD."""
+    text = jd_text.lower()
+    found = set()
+    for skill in _RELEVANT_SKILLS:
+        if skill in text:
+            found.add(skill)
+    return found
+
+
+def _candidate_jd_skill_match(candidate: dict[str, Any], jd_skill_terms: set[str]) -> float:
+    if not jd_skill_terms:
+        return 0.0
+    candidate_skills = {
+        str(s.get("name", "")).strip().lower()
+        for s in candidate.get("skills", [])
+        if isinstance(s, dict)
+    }
+    matched = 0
+    for required in jd_skill_terms:
+        if required in candidate_skills or any(
+            required in skill or skill in required for skill in candidate_skills
+        ):
+            matched += 1
+    return matched / len(jd_skill_terms)
 
 
 def _extract_requirements(jd_text: str) -> str:
-    terms = sorted(_important_terms(jd_text))
+    terms = sorted(_jd_skill_terms(jd_text))
     return ", ".join(terms[:30])
-
-
-def _important_terms(text: str) -> set[str]:
-    allowlist = {
-        "ai",
-        "airflow",
-        "analytics",
-        "aws",
-        "azure",
-        "cloud",
-        "data",
-        "deep",
-        "docker",
-        "etl",
-        "gcp",
-        "kafka",
-        "kubernetes",
-        "llm",
-        "machine",
-        "ml",
-        "mlops",
-        "model",
-        "nlp",
-        "python",
-        "rag",
-        "spark",
-        "sql",
-        "statistics",
-        "tensorflow",
-        "pytorch",
-    }
-    tokens = set(re.findall(r"[a-zA-Z][a-zA-Z0-9+#.-]{1,}", text.lower()))
-    return {token for token in tokens if token in allowlist}
-
-
-def _availability_score(signals: dict[str, Any]) -> float:
-    score = 0.5
-    if signals.get("open_to_work_flag"):
-        score += 0.2
-    if signals.get("verified_email"):
-        score += 0.1
-    notice = signals.get("notice_period_days")
-    if isinstance(notice, (int, float)):
-        score += 0.2 if notice <= 30 else 0.1 if notice <= 60 else 0.0
-    return min(score, 1.0)
 
 
 def _education_score(education: list[dict[str, Any]]) -> float:
@@ -312,6 +406,20 @@ def _education_score(education: list[dict[str, Any]]) -> float:
     return 0.5 if education else 0.3
 
 
+def _project_score(raw: dict[str, Any], candidate: dict[str, Any]) -> float:
+    text = " ".join(
+        [
+            str(candidate.get("profile", {}).get("summary", "")),
+            " ".join(str(x.get("description", "")) for x in raw.get("career_history", []) or []),
+        ]
+    ).lower()
+    if any(term in text for term in ["machine learning", "deep learning", "ml model", "llm", "rag"]):
+        return 0.8
+    if "data" in text or "analytics" in text:
+        return 0.6
+    return 0.3
+
+
 def _recommendation(score: float) -> str:
     if score >= 0.75:
         return "Strong Fit"
@@ -320,37 +428,3 @@ def _recommendation(score: float) -> str:
     if score >= 0.35:
         return "Possible Fit"
     return "Not a Fit"
-
-
-def _strengths(skills: set[str], years: float, signals: dict[str, Any]) -> list[str]:
-    strengths = []
-    if skills:
-        strengths.append("Relevant dataset skills: " + ", ".join(sorted(skills)[:6]))
-    if years >= 5:
-        strengths.append(f"Strong experience depth ({years:.1f} years)")
-    if signals.get("open_to_work_flag"):
-        strengths.append("Candidate is open to work")
-    return strengths[:5]
-
-
-def _weaknesses(missing_skills: list[str], signals: dict[str, Any]) -> list[str]:
-    weaknesses = []
-    if missing_skills:
-        weaknesses.append("Missing key JD skills: " + ", ".join(missing_skills[:5]))
-    if not signals.get("verified_email", True):
-        weaknesses.append("Email is not verified in source dataset")
-    return weaknesses[:5]
-
-
-def _summary(candidate: dict[str, Any], overall: float, skill_match: float, semantic_match: float) -> str:
-    return (
-        f"{candidate.get('name', 'This candidate')} was imported from the challenge dataset. "
-        f"Overall fit is {overall:.0%}, with {skill_match:.0%} skill overlap and "
-        f"{semantic_match:.0%} JD text overlap."
-    )
-
-
-def _ratio(numerator: int, denominator: int) -> float:
-    if denominator <= 0:
-        return 0.0
-    return max(0.0, min(float(numerator) / float(denominator), 1.0))

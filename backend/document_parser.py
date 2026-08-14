@@ -41,6 +41,8 @@ class UniversalParser:
     # ------------------------------------------------------------------
     _GITHUB_RE = re.compile(r"(https?://)?(www\.)?github\.com/[A-Za-z0-9_\-./]+", re.IGNORECASE)
     _LINKEDIN_RE = re.compile(r"(https?://)?(www\.)?linkedin\.com/[A-Za-z0-9_\-./%]+", re.IGNORECASE)
+    _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+    _PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d{1,3}[ .-]?)?(?:\(?\d{2,5}\)?[ .-]?)?\d[\d .-]{7,}\d(?!\w)")
 
     _EDUCATION_SECTION_RE = re.compile(r"^\s*(education|academic background|qualifications)\s*:?\s*$", re.IGNORECASE)
     _PROJECTS_SECTION_RE = re.compile(r"^\s*(projects?|personal projects?|key projects?)\s*:?\s*$", re.IGNORECASE)
@@ -188,7 +190,11 @@ class UniversalParser:
                 break
 
         # 3. Attempt to extract Experience Years
-        exp_match = re.search(r'(\d+(?:\.\d+)?)\+?\s*years?(?:\s*of\s*)?experience', raw_text, re.IGNORECASE)
+        exp_match = re.search(
+            r'(\d+(?:\.\d+)?)\+?\s*years?\s*(?:of\s+)?experience',
+            raw_text,
+            re.IGNORECASE,
+        )
         if exp_match:
             try:
                 experience_years = float(exp_match.group(1))
@@ -220,7 +226,11 @@ class UniversalParser:
                 "duration_months": 12
             })
 
-        # 5. GitHub / LinkedIn URLs
+        # 5. Contact and profile links.  Keeping these at the candidate level
+        # lets recruiters contact a candidate after AI shortlisting.
+        email_match = UniversalParser._EMAIL_RE.search(raw_text)
+        email = email_match.group(0).lower() if email_match else ""
+        phone = UniversalParser._first_phone(raw_text)
         github_url = UniversalParser._first_match(UniversalParser._GITHUB_RE, raw_text)
         linkedin_url = UniversalParser._first_match(UniversalParser._LINKEDIN_RE, raw_text)
 
@@ -239,6 +249,8 @@ class UniversalParser:
         candidate = {
             "candidate_id": candidate_id,
             "name": name,
+            "email": email,
+            "phone": phone,
             "experience_years": experience_years,
             "profile": {
                 "current_title": title,
@@ -280,6 +292,17 @@ class UniversalParser:
         if not url.lower().startswith("http"):
             url = "https://" + url
         return url
+
+    @staticmethod
+    def _first_phone(text: str) -> str:
+        """Return the first plausible phone number without matching dates."""
+        for line in text.splitlines():
+            for match in UniversalParser._PHONE_RE.finditer(line):
+                value = match.group(0).strip()
+                digits = re.sub(r"\D", "", value)
+                if 10 <= len(digits) <= 15:
+                    return value
+        return ""
 
     @staticmethod
     def _extract_section_entries(

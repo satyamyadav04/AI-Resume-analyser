@@ -204,10 +204,12 @@ def get_resume_file_path(candidate_db_id: int) -> Optional[str]:
     from backend.database.db import get_db
 
     with get_db() as db:
-        row = db.execute(
-            """SELECT ru.file_path FROM candidates c
-               JOIN resume_uploads ru ON ru.id = c.upload_id
-               WHERE c.id = ? LIMIT 1""",
-            (candidate_db_id,),
-        ).fetchone()
-        return row[0] if row else None
+        with db.cursor() as cur:
+            cur.execute(
+                """SELECT ru.file_path FROM candidates c
+                   JOIN resume_uploads ru ON ru.id = c.upload_id
+                   WHERE c.id = %s LIMIT 1""",
+                (candidate_db_id,),
+            )
+            row = cur.fetchone()
+            return str(row[0]) if row else None
