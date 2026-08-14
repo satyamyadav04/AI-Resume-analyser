@@ -129,7 +129,7 @@ def get_active_jd(company_id: int) -> Optional[dict[str, Any]]:
                 SELECT *
                 FROM job_descriptions
                 WHERE company_id = %s
-                  AND is_active = TRUE
+                  AND is_active = 1
                 ORDER BY
                     updated_at DESC,
                     created_at DESC,
@@ -175,7 +175,7 @@ def set_active_jd(company_id: int, jd_id: int) -> None:
                 """
                 UPDATE job_descriptions
                 SET
-                    is_active = FALSE,
+                    is_active = 0,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE company_id = %s
                 """,
@@ -186,7 +186,7 @@ def set_active_jd(company_id: int, jd_id: int) -> None:
                 """
                 UPDATE job_descriptions
                 SET
-                    is_active = TRUE,
+                    is_active = 1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
                   AND company_id = %s
