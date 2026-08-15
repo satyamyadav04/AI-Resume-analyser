@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 from components import metric_card, score_ring, progress_bar, skill_badges, card_open, card_close
+from formatting import format_timestamp
 from backend.services import analytics_service, jd_service, upload_service
 from backend.repositories.candidate_repo import get_recent_uploads
 
@@ -255,21 +256,23 @@ def _get_best_candidate_skills(company_id: int, jd_id) -> list[str]:
     try:
         from backend.database.db import get_db
         params = [company_id]
-        jd_filter = "AND c.jd_id = ?" if jd_id else ""
+        jd_filter = "AND c.jd_id = %s" if jd_id else ""
         if jd_id:
             params.append(jd_id)
         with get_db() as db:
-            row = db.execute(
-                f"""SELECT c.id FROM candidates c
-                    JOIN analysis_results ar ON ar.candidate_id = c.id
-                    WHERE c.company_id = ? {jd_filter}
-                    ORDER BY ar.overall_score DESC LIMIT 1""",
-                params,
-            ).fetchone()
-            if row:
-                from backend.repositories.candidate_repo import get_candidate_skills
-                skills = get_candidate_skills(row[0])
-                return [s["name"] for s in skills[:5] if s.get("name")]
+            with db.cursor() as cur:
+                cur.execute(
+                    f"""SELECT c.id FROM candidates c
+                        JOIN analysis_results ar ON ar.candidate_id = c.id
+                        WHERE c.company_id = %s {jd_filter}
+                        ORDER BY ar.overall_score DESC LIMIT 1""",
+                    params,
+                )
+                row = cur.fetchone()
+        if row:
+            from backend.repositories.candidate_repo import get_candidate_skills
+            skills = get_candidate_skills(row[0])
+            return [s["name"] for s in skills[:5] if s.get("name")]
     except Exception:
         pass
     return []
@@ -298,6 +301,8 @@ def _render_recent_uploads(company_id: int, t: dict):
 
             row_cols = st.columns([5, 1])
             with row_cols[0]:
+                size_kb = round(float(upload.get("file_size") or 0) / 1024, 1)
+                candidate_name = upload.get("candidate_name") or "Analysis pending"
                 st.markdown(
                     f"""
                     <div style="display:flex;justify-content:space-between;align-items:center;
@@ -309,7 +314,7 @@ def _render_recent_uploads(company_id: int, t: dict):
                                     {upload.get('filename', 'Unknown')[:40]}
                                 </div>
                                 <div style="font-size:0.72rem;color:{t['text_muted']};">
-                                    by {upload.get('uploader_name', 'User')} · {upload.get('created_at', '')[:16]}
+                                    by {upload.get('uploader_name', 'User')} · {format_timestamp(upload.get('created_at'))}
                                 </div>
                             </div>
                         </div>
@@ -321,6 +326,7 @@ def _render_recent_uploads(company_id: int, t: dict):
                     """,
                     unsafe_allow_html=True,
                 )
+                st.caption(f"Candidate: {candidate_name} · {size_kb} KB")
             with row_cols[1]:
                 if st.button("🗑 Delete", key=f"dash_delete_upload_{upload['id']}", use_container_width=True):
                     try:

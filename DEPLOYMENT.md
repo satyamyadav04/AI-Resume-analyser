@@ -8,7 +8,7 @@ frontend/app.py
 
 Use Python 3.11 and install dependencies from `requirements.txt`. In the deployment dashboard, set `DATABASE_URL` to a PostgreSQL connection string. The app creates its tables automatically on first launch.
 
-The repository includes the small challenge dataset sample used by **Resume Analysis → Use Challenge Dataset**. It is intentionally used when the larger `candidates.jsonl` file is not bundled, so imports remain deploy-safe.
+The repository includes the small challenge dataset sample used by **Resume Analysis → Use Challenge Dataset**. It is intentionally used when the larger `candidates.jsonl` file is not bundled, so imports remain deploy-safe. The full local `candidates.jsonl` is ignored by Git because it is large; Streamlit Cloud cannot access it unless it is supplied through external storage, a database, or Git LFS.
 
 For persistent user uploads, attach persistent storage or use object storage in production. Ephemeral hosts can process resumes, but locally written files can disappear after a redeploy.
 

@@ -103,16 +103,39 @@ def load_dataset_jd_text() -> str:
 
 
 def _resolve_dataset_path(dataset_path: Optional[Path]) -> Path:
-    """Prefer the full JSONL dataset, then the checked-in sample dataset."""
+    """Prefer a full JSONL dataset, then the checked-in JSON sample.
+
+    Dataset archives are often extracted with one extra directory level. A
+    recursive fallback keeps local and Streamlit Cloud layouts working alike.
+    """
     if dataset_path is not None:
+        if not dataset_path.exists():
+            raise FileNotFoundError(f"Dataset file does not exist: {dataset_path}")
         return dataset_path
     if DATASET_CANDIDATES_PATH.exists():
         return DATASET_CANDIDATES_PATH
+    full_candidates = _find_dataset_file("candidates.jsonl")
+    if full_candidates:
+        return full_candidates
     if DATASET_SAMPLE_PATH.exists():
         return DATASET_SAMPLE_PATH
+    sample_candidates = _find_dataset_file("sample_candidates.json")
+    if sample_candidates:
+        return sample_candidates
     raise FileNotFoundError(
         "Dataset candidates file not found. Expected candidates.jsonl or sample_candidates.json."
     )
+
+
+def _find_dataset_file(filename: str) -> Optional[Path]:
+    """Find a dataset file even when the archive added a nested folder."""
+    root = get_project_root() / "data" / "recruitment_dataset"
+    if not root.exists():
+        return None
+    matches = sorted(
+        path for path in root.rglob(filename) if "__MACOSX" not in path.parts
+    )
+    return matches[0] if matches else None
 
 
 def _iter_dataset_records(path: Path):
@@ -210,6 +233,7 @@ def import_challenge_candidates(
         "skipped": skipped,
         "last_candidate_id": last_candidate_id,
         "dataset_path": str(path),
+        "dataset_source": "full dataset" if path.name == "candidates.jsonl" else "sample dataset",
         "ml_enabled": pipeline.use_transformer,
         "embedding_model": pipeline.model_name if pipeline.use_transformer else "TF-IDF fallback",
     }
