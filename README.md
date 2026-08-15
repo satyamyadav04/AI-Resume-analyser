@@ -12,6 +12,7 @@ Using **Natural Language Processing (NLP)** and **semantic similarity search**, 
 
 This significantly reduces manual effort while improving hiring accuracy and efficiency.
 
+# 📌 Demo link:- https://ai-resume-analyser-qqgobjjmq8vodtjvqvahyd.streamlit.app/
 ---
 
 # ✨ Features
@@ -118,6 +119,22 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## 🚀 Deployment
+
+This project is configured to run as a Streamlit application with the app entry point:
+
+```text
+frontend/app.py
+```
+
+Use Python 3.11 for deployment and set `DATABASE_URL` to your PostgreSQL connection string. The app creates its tables automatically on first launch.
+
+For production hosting, make sure uploaded resumes and generated files are stored in persistent storage or object storage, because ephemeral hosts can lose locally written files after redeploys.
+
+Optional email notifications require the `ATS_SMTP_*` environment variables (or your hosting platform secrets) and should not be committed to source control.
+
+The repository includes the sample challenge dataset used by the Resume Analysis workflow; the larger `candidates.jsonl` file is not required for deploy-safe runs when it is not bundled.
+
 ---
 
 # 🚀 Run the Application
@@ -219,18 +236,7 @@ This project is licensed under the **MIT License**.
 
 # 👩‍💻 Author
 
-## **Nayanika Bhadouria**
-
-**B.Tech (Computer Science & Engineering)**
-
-AI | Machine Learning | Software Development | Open Source
-
-- 💼 LinkedIn: https://linkedin.com/in/your-profile
-- 🐦 Twitter/X: https://twitter.com/your-profile
-- 🌐 Portfolio: https://your-portfolio.com
-
----
-
+## **Unknown**
 # ⭐ Support
 
 If you found this project helpful, **please give it a ⭐ Star on GitHub!**
