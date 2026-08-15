@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 from components import score_ring, progress_bar, skill_badges, card_open, card_close
+from formatting import format_timestamp
 from backend.services import dataset_service, upload_service, jd_service
 from backend.services.candidate_service import get_candidate_profile
 
@@ -84,7 +85,7 @@ def render(t: dict):
             if result["imported"]:
                 st.session_state.view_candidate_id = result["last_candidate_id"]
                 st.success(
-                    f"Imported {result['imported']} dataset candidates. "
+                    f"Imported {result['imported']} candidates from the {result['dataset_source']}. "
                     f"Skipped {result['skipped']} duplicates."
                 )
                 st.rerun()
@@ -360,13 +361,16 @@ def _render_upload_history(company_id, jd_id, t):
             icon = {"completed": "✅", "failed": "❌", "processing": "⏳", "uploaded": "📄"}.get(status, "📄")
             info_col, action_col = st.columns([4.5, 1.2])
             with info_col:
+                size_kb = round(float(up.get("file_size") or 0) / 1024, 1)
+                candidate_name = up.get("candidate_name") or "Analysis pending"
                 st.markdown(
                     f"""<div style="font-size:0.78rem;color:{t['text_secondary']};
                                     padding:0.2rem 0;border-bottom:1px solid {t['border']};">
-                        {icon} {up.get('filename','')[:32]} — <span style="color:{t['text_muted']};">{up.get('created_at','')[:16]}</span>
+                        {icon} {up.get('filename','')[:32]} — <span style="color:{t['text_muted']};">{format_timestamp(up.get('created_at'))}</span>
                     </div>""",
                     unsafe_allow_html=True,
                 )
+                st.caption(f"{candidate_name} · {size_kb} KB · Status: {status or 'uploaded'}")
             with action_col:
                 if st.button("🗑 Delete", key=f"delete_upload_{up['id']}", help=f"Delete {up.get('filename', '')}", use_container_width=True):
                     try:

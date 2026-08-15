@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 from components import score_ring, progress_bar, skill_badges, card_open, card_close
+from formatting import format_timestamp
 from backend.services.candidate_service import (
     get_candidate_profile, move_to_stage, add_note, schedule_interview,
     get_resume_file_path, STAGE_LABELS
@@ -137,6 +138,27 @@ def render(t: dict):
                     key="cp_dl_resume",
                 )
 
+            confirm_delete = st.checkbox(
+                "Confirm resume deletion",
+                key="cp_confirm_delete_resume",
+                help="This removes the uploaded resume and its linked candidate analysis.",
+            )
+            if st.button(
+                "Delete Resume",
+                key="cp_delete_resume",
+                use_container_width=True,
+                disabled=not confirm_delete,
+            ):
+                from backend.services import upload_service
+
+                upload_id = profile.get("upload_id")
+                if upload_id:
+                    upload_service.delete_uploaded_resume(int(upload_id), company_id)
+                    st.session_state.pop("selected_candidate_id", None)
+                    st.session_state.page = "Resume Analysis"
+                    st.success("Resume and its candidate record were deleted.")
+                    st.rerun()
+
         # Download report
         report_bytes = generate_candidate_report(candidate_id)
         st.download_button(
@@ -230,7 +252,7 @@ def render(t: dict):
                             <div style="font-size:0.85rem;font-weight:700;color:{t['text']};">{ev.get('event_type','')}</div>
                             <div style="font-size:0.78rem;color:{t['text_secondary']};margin-top:0.1rem;">{ev.get('event_detail','')}</div>
                             <div style="font-size:0.72rem;color:{t['text_muted']};margin-top:0.2rem;">
-                                {ev.get('created_at','')[:16]} · {ev.get('actor_name','System')}
+                                {format_timestamp(ev.get('created_at'))} · {ev.get('actor_name','System')}
                             </div>
                         </div>
                     </div>
@@ -268,7 +290,7 @@ def render(t: dict):
                         <div style="padding:0.5rem 0;border-bottom:1px solid {t['border']};">
                             <div style="font-size:0.82rem;color:{t['text']};line-height:1.5;">{note.get('note_text','')}</div>
                             <div style="font-size:0.72rem;color:{t['text_muted']};margin-top:0.2rem;">
-                                {note.get('author_name','?')} · {note.get('created_at','')[:16]}
+                                {note.get('author_name','?')} · {format_timestamp(note.get('created_at'))}
                             </div>
                         </div>
                         """,

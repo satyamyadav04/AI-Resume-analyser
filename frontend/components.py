@@ -198,8 +198,15 @@ def section_header(title: str, subtitle: str = None):
 
 
 def card_open(extra_style=""):
-    st.markdown(f'<div class="arx-card" style="{extra_style}">', unsafe_allow_html=True)
+    """Legacy layout hook that avoids emitting empty HTML card elements.
+
+    Streamlit widgets cannot be children of an HTML div written with
+    ``st.markdown``. The old wrapper consequently rendered a blank card above
+    the actual widgets on every page.
+    """
+    return None
 
 
 def card_close():
-    st.markdown("</div>", unsafe_allow_html=True)
+    """Companion to :func:`card_open`, retained for existing page code."""
+    return None

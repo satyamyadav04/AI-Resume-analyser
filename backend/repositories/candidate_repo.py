@@ -790,10 +790,13 @@ def get_recent_uploads(
                 """
                 SELECT
                     ru.*,
-                    u.name AS uploader_name
+                    u.name AS uploader_name,
+                    c.name AS candidate_name
                 FROM resume_uploads ru
                 LEFT JOIN users u
                     ON ru.uploaded_by = u.id
+                LEFT JOIN candidates c
+                    ON c.upload_id = ru.id
                 WHERE ru.company_id = %s
                 ORDER BY ru.created_at DESC
                 LIMIT %s

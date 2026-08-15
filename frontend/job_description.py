@@ -6,6 +6,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
+from formatting import format_timestamp
 from components import card_open, card_close
 from backend.services import jd_service
 
@@ -152,7 +153,7 @@ def render(t: dict):
                                     {jd['title']}
                                 </div>
                                 <div style="font-size:0.73rem;color:{t['text_muted']};margin-top:0.15rem;">
-                                    {jd.get('resume_count', 0)} resumes · {jd.get('created_at', '')[:10]}
+                                    {jd.get('resume_count', 0)} resumes · {format_timestamp(jd.get('created_at'), 10)}
                                 </div>
                             </div>
                             <div style="margin-left:0.5rem;">{active_badge}</div>
