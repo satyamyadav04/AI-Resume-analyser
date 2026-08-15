@@ -12,7 +12,7 @@ Using **Natural Language Processing (NLP)** and **semantic similarity search**, 
 
 This significantly reduces manual effort while improving hiring accuracy and efficiency.
 
-# 📌 Demo Link:- https://ai-resume-analyser-qqgobjjmq8vodtjvqvahyd.streamlit.app/
+# 📌 Demo link:- https://ai-resume-analyser-qqgobjjmq8vodtjvqvahyd.streamlit.app/
 ---
 
 # ✨ Features
@@ -119,6 +119,22 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## 🚀 Deployment
+
+This project is configured to run as a Streamlit application with the app entry point:
+
+```text
+frontend/app.py
+```
+
+Use Python 3.11 for deployment and set `DATABASE_URL` to your PostgreSQL connection string. The app creates its tables automatically on first launch.
+
+For production hosting, make sure uploaded resumes and generated files are stored in persistent storage or object storage, because ephemeral hosts can lose locally written files after redeploys.
+
+Optional email notifications require the `ATS_SMTP_*` environment variables (or your hosting platform secrets) and should not be committed to source control.
+
+The repository includes the sample challenge dataset used by the Resume Analysis workflow; the larger `candidates.jsonl` file is not required for deploy-safe runs when it is not bundled.
+
 ---
 
 # 🚀 Run the Application
@@ -200,7 +216,7 @@ use_tls = true
 
 # 🤝 Contributing
 
-Contributions are always welcome
+Contributions are always welcome!
 
 ```bash
 git checkout -b feature-name
