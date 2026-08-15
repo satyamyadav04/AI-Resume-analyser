@@ -12,6 +12,7 @@ Using **Natural Language Processing (NLP)** and **semantic similarity search**, 
 
 This significantly reduces manual effort while improving hiring accuracy and efficiency.
 
+# 📌 Demo Link:- https://ai-resume-analyser-qqgobjjmq8vodtjvqvahyd.streamlit.app/
 ---
 
 # ✨ Features
@@ -219,18 +220,7 @@ This project is licensed under the **MIT License**.
 
 # 👩‍💻 Author
 
-## **Nayanika Bhadouria**
-
-**B.Tech (Computer Science & Engineering)**
-
-AI | Machine Learning | Software Development | Open Source
-
-- 💼 LinkedIn: https://linkedin.com/in/your-profile
-- 🐦 Twitter/X: https://twitter.com/your-profile
-- 🌐 Portfolio: https://your-portfolio.com
-
----
-
+## **Unknown**
 # ⭐ Support
 
 If you found this project helpful, **please give it a ⭐ Star on GitHub!**
