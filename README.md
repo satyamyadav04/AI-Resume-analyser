@@ -200,7 +200,7 @@ use_tls = true
 
 # 🤝 Contributing
 
-Contributions are always welcome!
+Contributions are always welcome
 
 ```bash
 git checkout -b feature-name
