@@ -127,7 +127,18 @@ This project is configured to run as a Streamlit application with the app entry 
 frontend/app.py
 ```
 
-Use Python 3.11 for deployment and set `DATABASE_URL` to your PostgreSQL connection string. The app creates its tables automatically on first launch.
+Use Python 3.11 for deployment. The app creates its tables automatically on first launch.
+
+For Streamlit Community Cloud, set `DATABASE_URL` in the app's **Settings ->
+Secrets** (not in the repository):
+
+```toml
+DATABASE_URL = "postgresql://USER:PASSWORD@PUBLIC_HOST:5432/ai_resume_analyzer?sslmode=require"
+```
+
+When the app runs on Streamlit Community Cloud, use Render's external/public
+PostgreSQL URL. Render internal database URLs only work for services running
+inside Render's private network.
 
 For production hosting, make sure uploaded resumes and generated files are stored in persistent storage or object storage, because ephemeral hosts can lose locally written files after redeploys.
 
